@@ -307,11 +307,7 @@ pub fn deleted_file() -> Option<PathBuf> {
 /// Every saved path under `root`, with its text, whether or not it still exists.
 pub fn load_all(file: &Path, root: &Path) -> Vec<(PathBuf, String)> {
     let text = std::fs::read_to_string(file).unwrap_or_default();
-    text.lines()
-        .filter_map(|l| l.split_once('\t'))
-        .map(|(p, r)| (PathBuf::from(p), r.to_string()))
-        .filter(|(p, _)| p.starts_with(root))
-        .collect()
+    text.lines().filter_map(|l| l.split_once('\t')).map(|(p, r)| (PathBuf::from(p), r.to_string())).filter(|(p, _)| p.starts_with(root)).collect()
 }
 
 /// Copies the saved suggestions on or under `gone` into the deleted record,
@@ -356,11 +352,7 @@ pub fn load_paths(file: &Path, root: &Path) -> Vec<(PathBuf, String)> {
 pub fn save_paths<'a>(file: &Path, root: &Path, marks: impl Iterator<Item = (&'a Path, &'a str)>) -> io::Result<()> {
     let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
     let old = std::fs::read_to_string(file).unwrap_or_default();
-    let mut out: String = old
-        .lines()
-        .filter(|l| l.split_once('\t').is_some_and(|(p, _)| !Path::new(p).starts_with(root)))
-        .map(|l| format!("{l}\n"))
-        .collect();
+    let mut out: String = old.lines().filter(|l| l.split_once('\t').is_some_and(|(p, _)| !Path::new(p).starts_with(root))).map(|l| format!("{l}\n")).collect();
     for (p, r) in marks {
         out.push_str(&format!("{}\t{}\n", clean(&p.to_string_lossy()), clean(r)));
     }
@@ -460,7 +452,7 @@ mod tests {
         assert_eq!((tree.alloc, tree.private, tree.items, tree.files), (truth.alloc, truth.private, truth.items, truth.files));
         assert!(tree.children.iter().all(|c| &*c.name != "gone"));
         assert_eq!(find(&tree, "keep").alloc, find(&truth, "keep").alloc);
-        assert_eq!(find(&find(&tree, "keep"), "deep").children.len(), 1);
+        assert_eq!(find(find(&tree, "keep"), "deep").children.len(), 1);
         assert_eq!(find(&tree, "node_modules").children.len(), 1, "a change inside a collapsed folder rescans all of it");
         assert_eq!(n, 3, "new/ and new/inner come with relisting the root");
         std::fs::remove_dir_all(&d).unwrap();

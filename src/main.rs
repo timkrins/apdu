@@ -5,6 +5,7 @@ mod mcp;
 mod scan;
 mod treemap;
 
+use agent::{Json, Obj, err, obj};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::crossterm::execute;
@@ -12,7 +13,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
-use agent::{Json, Obj, err, obj};
 use scan::{Kind, Node, Progress};
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_NAME");
 
-const USAGE: &str = concat!("usage: ", env!("CARGO_BIN_NAME"), " [--cross-fs] [--no-cache] [--fast] [--mcp | --mcp-lan] [--mcp-port N]
+const USAGE: &str = concat!(
+    "usage: ",
+    env!("CARGO_BIN_NAME"),
+    " [--cross-fs] [--no-cache] [--fast] [--mcp | --mcp-lan] [--mcp-port N]
        [--print [N] [--bytes]] [dir]
 
 Browse disk usage like ncdu, counting APFS clones properly.
@@ -44,12 +47,20 @@ Browse disk usage like ncdu, counting APFS clones properly.
                first use; delete it to get a new one).
 
 Marked for deletion (x in the TUI marks, D there deletes them):
-  ", env!("CARGO_BIN_NAME"), " marked                 list everything marked, in every folder
-  ", env!("CARGO_BIN_NAME"), " delete-marked [--yes]  delete everything marked (asks first unless --yes)
+  ",
+    env!("CARGO_BIN_NAME"),
+    " marked                 list everything marked, in every folder
+  ",
+    env!("CARGO_BIN_NAME"),
+    " delete-marked [--yes]  delete everything marked (asks first unless --yes)
 
 Driving a running TUI (for LLMs and agents):
-  Each TUI listens on a Unix socket at $TMPDIR/", env!("CARGO_BIN_NAME"), "-<uid>/<pid>.sock.
-  `", env!("CARGO_BIN_NAME"), " <command>` sends it one line of JSON and prints the JSON answer
+  Each TUI listens on a Unix socket at $TMPDIR/",
+    env!("CARGO_BIN_NAME"),
+    "-<uid>/<pid>.sock.
+  `",
+    env!("CARGO_BIN_NAME"),
+    " <command>` sends it one line of JSON and prints the JSON answer
   (errors go to stderr, exit 1). With a <path>, it talks to the TUI browsing the
   deepest folder that holds it (the newest on a tie); suggestions and clear
   with no path go to every TUI. --pid N picks one TUI instead.
@@ -68,13 +79,16 @@ Driving a running TUI (for LLMs and agents):
                            match, and can miss what is inside .git and
                            node_modules (the saved scan keeps only their totals)
   suggestions              list the suggestions, and the suggested paths that
-                           were since deleted in ", env!("CARGO_BIN_NAME"), " (don't suggest those again)
+                           were since deleted in ",
+    env!("CARGO_BIN_NAME"),
+    " (don't suggest those again)
   clear [path]             remove the suggestions (or just the one on <path>)
   instances                list the running TUIs (pid and folder)
 
   In the TUI the user steps through suggestions with ] and [, and pages through
   them with S, marking the ones to delete. None of these commands deletes or
-  marks anything.");
+  marks anything."
+);
 
 const HELP: &str = "\
 up/k down/j      move          PgUp/PgDn Home/g End/G
@@ -136,8 +150,7 @@ struct Tile {
     size: u64,
 }
 
-const PALETTE: [(u8, u8, u8); 8] =
-    [(38, 70, 120), (30, 100, 100), (90, 60, 120), (100, 90, 35), (120, 70, 40), (40, 100, 60), (110, 40, 60), (70, 80, 110)];
+const PALETTE: [(u8, u8, u8); 8] = [(38, 70, 120), (30, 100, 100), (90, 60, 120), (100, 90, 35), (120, 70, 40), (40, 100, 60), (110, 40, 60), (70, 80, 110)];
 const MARKED: (u8, u8, u8) = (170, 35, 35);
 
 struct App {
@@ -228,9 +241,8 @@ fn date(secs: i64) -> String {
 }
 
 fn iso(secs: i64) -> Json {
-    tm(secs, true).map_or(Json::Null, |t| {
-        format!("{}-{:02}-{:02}T{:02}:{:02}:{:02}Z", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec).into()
-    })
+    tm(secs, true)
+        .map_or(Json::Null, |t| format!("{}-{:02}-{:02}T{:02}:{:02}:{:02}Z", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec).into())
 }
 
 /// Every node under `n` whose name matches `pattern` (lowercase, `*` matches
@@ -446,7 +458,9 @@ impl App {
             After::One(i) => {
                 self.message = Some(match failed.first() {
                     Some(e) => format!(" {e}; r rescans"),
-                    None if alloc > freed => format!("deleted {} (freed about {}); its clones elsewhere may now be private, r rescans", d.targets[0].display(), human(freed)),
+                    None if alloc > freed => {
+                        format!("deleted {} (freed about {}); its clones elsewhere may now be private, r rescans", d.targets[0].display(), human(freed))
+                    }
                     None => format!("deleted {} (freed about {})", d.targets[0].display(), human(freed)),
                 });
                 let len = self.cur().children.len();
@@ -501,10 +515,10 @@ impl App {
                 d = &mut d.children[i];
             }
         }
-        if let (Some(s), Some(d)) = (&self.sugg_file, &self.deleted_file) {
-            if let Err(e) = cache::record_deleted(s, d, &[target.to_path_buf()], unix_now()) {
-                self.message = Some(format!(" could not record deleted suggestions in {}: {e}", d.display()));
-            }
+        if let (Some(s), Some(d)) = (&self.sugg_file, &self.deleted_file)
+            && let Err(e) = cache::record_deleted(s, d, &[target.to_path_buf()], unix_now())
+        {
+            self.message = Some(format!(" could not record deleted suggestions in {}: {e}", d.display()));
         }
         self.suggestions.retain(|s| !s.path.starts_with(target));
         self.marked.retain(|p| !p.starts_with(target));
@@ -556,10 +570,10 @@ impl App {
     }
 
     fn save_marked(&mut self) {
-        if let Some(f) = &self.marked_file {
-            if let Err(e) = cache::save_paths(f, &self.root_path, self.marked.iter().map(|p| (p.as_path(), ""))) {
-                self.message = Some(format!(" could not save marks to {}: {e}", f.display()));
-            }
+        if let Some(f) = &self.marked_file
+            && let Err(e) = cache::save_paths(f, &self.root_path, self.marked.iter().map(|p| (p.as_path(), "")))
+        {
+            self.message = Some(format!(" could not save marks to {}: {e}", f.display()));
         }
     }
 
@@ -624,11 +638,7 @@ impl App {
         let old = self.cur();
         fresh.name = old.name.clone();
         let fresh_modified = fresh.modified;
-        let (da, dp, di) = (
-            fresh.alloc as i64 - old.alloc as i64,
-            fresh.private as i64 - old.private as i64,
-            fresh.items as i64 - old.items as i64,
-        );
+        let (da, dp, di) = (fresh.alloc as i64 - old.alloc as i64, fresh.private as i64 - old.private as i64, fresh.items as i64 - old.items as i64);
         let df = fresh.files as i64 - old.files as i64;
         self.adjust(self.path.len(), |n| {
             n.alloc = n.alloc.saturating_add_signed(da);
@@ -872,7 +882,11 @@ impl App {
                     .iter()
                     .map(|s| {
                         let marked = self.marked_under(&s.path).is_some();
-                        obj([("path", s.path.to_string_lossy().into_owned().into()), ("reason", s.reason.clone().into()), ("marked_for_deletion", marked.into())])
+                        obj([
+                            ("path", s.path.to_string_lossy().into_owned().into()),
+                            ("reason", s.reason.clone().into()),
+                            ("marked_for_deletion", marked.into()),
+                        ])
                     })
                     .collect();
                 Ok(obj([("ok", true.into()), ("suggestions", Json::Arr(list)), ("deleted", Json::Arr(deleted))]))
@@ -940,14 +954,14 @@ impl App {
         if self.free_tile() {
             items.push((TileKind::Free, self.free.0));
         }
-        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.sort_by_key(|i| std::cmp::Reverse(i.1));
         let total: u64 = items.iter().map(|i| i.1).sum();
         let cells = area.width as u64 * area.height as u64;
         let shown = items.iter().take(300).take_while(|i| i.1 as u128 * cells as u128 >= 6 * total as u128).count();
         if shown < items.len() {
             let rest = items.split_off(shown);
             items.push((TileKind::Others(rest.len()), rest.iter().map(|i| i.1).sum()));
-            items.sort_by(|a, b| b.1.cmp(&a.1));
+            items.sort_by_key(|i| std::cmp::Reverse(i.1));
         }
         let sizes: Vec<u64> = items.iter().map(|i| i.1).collect();
         treemap::layout(&sizes, area)
@@ -1049,11 +1063,7 @@ impl App {
             };
             let is_sel = t.kind == TileKind::Child(selected);
             let style = Style::new().bg(Color::Rgb(r, g, b)).fg(if t.kind == TileKind::Free { Color::Gray } else { Color::White });
-            let text = vec![
-                Line::from(name).bold(),
-                Line::from(human(t.size)),
-                Line::from(format!("{:.1}%", t.size as f64 * 100.0 / total as f64)).dim(),
-            ];
+            let text = vec![Line::from(name).bold(), Line::from(human(t.size)), Line::from(format!("{:.1}%", t.size as f64 * 100.0 / total as f64)).dim()];
             let mut p = Paragraph::new(text).style(style);
             if t.rect.width >= 4 && t.rect.height >= 3 {
                 let border = if is_sel {
@@ -1289,67 +1299,78 @@ impl App {
                 columns,
             );
         } else {
-        let mark = |c: Col| if self.col == c { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM };
-        f.render_widget(
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!("{:>10}", "private"), mark(Col::Private)),
-                Span::raw(" "),
-                Span::styled(format!("{:>10}", "allocated"), mark(Col::Alloc)),
-                Span::raw(" "),
-                Span::styled(format!("{:>10}", "modified"), if self.sort == Sort::Modified { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM }),
-                Span::raw(" "),
-                Span::styled(format!("{:>10}", "created"), if self.sort == Sort::Created { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM }),
-                Span::raw(" "),
-                Span::styled(format!("{:>8}", "files"), if self.sort == Sort::Files { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM }),
-                Span::raw("                    name").dim(),
-            ]),
-            columns,
-        );
+            let mark = |c: Col| if self.col == c { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM };
+            f.render_widget(
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(format!("{:>10}", "private"), mark(Col::Private)),
+                    Span::raw(" "),
+                    Span::styled(format!("{:>10}", "allocated"), mark(Col::Alloc)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:>10}", "modified"),
+                        if self.sort == Sort::Modified { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM },
+                    ),
+                    Span::raw(" "),
+                    Span::styled(format!("{:>10}", "created"), if self.sort == Sort::Created { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM }),
+                    Span::raw(" "),
+                    Span::styled(format!("{:>8}", "files"), if self.sort == Sort::Files { Modifier::BOLD | Modifier::UNDERLINED } else { Modifier::DIM }),
+                    Span::raw("                    name").dim(),
+                ]),
+                columns,
+            );
         }
 
         if self.page == Page::Tree && self.map {
             self.draw_map(f, body);
         } else if self.page == Page::Tree {
-        let dir = self.cur();
-        let total = self.size(dir).max(1);
-        let biggest = dir.children.iter().map(|c| self.size(c)).max().unwrap_or(0).max(1);
-        let here = self.fs_path();
-        let items: Vec<ListItem> = dir
-            .children
-            .iter()
-            .map(|c| {
-                let s = self.size(c);
-                let filled = ((s as f64 / biggest as f64) * 10.0).round() as usize;
-                let flag = if c.error { '!' } else if c.kind == Kind::OtherFs { '>' } else if c.kind == Kind::Duplicate { '=' } else { ' ' };
-                let slash = if c.kind == Kind::File { "" } else { "/" };
-                let p = here.join(&*c.name);
-                let mark = match self.mark(&p) {
-                    Some('*') => Span::raw("*").yellow().bold(),
-                    Some(m) => Span::raw(m.to_string()).yellow(),
-                    None => Span::raw(" "),
-                };
-                ListItem::new(Line::from(vec![
-                    self.del_mark(&p),
-                    mark,
-                    Span::raw(format!(
-                        "{:>10} {:>10} {:>10} {:>10} {:>8} [{:<10}] {:>5.1}% {flag}{}{slash}",
-                        human(c.private),
-                        human(c.alloc),
-                        date(c.modified),
-                        date(c.created),
-                        if c.kind == Kind::File { String::new() } else { count(c.files) },
-                        "#".repeat(filled),
-                        s as f64 * 100.0 / total as f64,
-                        c.name
-                    )),
-                ]))
-            })
-            .collect();
-        let list = List::new(items).highlight_style(Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
-        let mut state = self.list.clone();
-        f.render_stateful_widget(list, body, &mut state);
-        self.list = state;
+            let dir = self.cur();
+            let total = self.size(dir).max(1);
+            let biggest = dir.children.iter().map(|c| self.size(c)).max().unwrap_or(0).max(1);
+            let here = self.fs_path();
+            let items: Vec<ListItem> = dir
+                .children
+                .iter()
+                .map(|c| {
+                    let s = self.size(c);
+                    let filled = ((s as f64 / biggest as f64) * 10.0).round() as usize;
+                    let flag = if c.error {
+                        '!'
+                    } else if c.kind == Kind::OtherFs {
+                        '>'
+                    } else if c.kind == Kind::Duplicate {
+                        '='
+                    } else {
+                        ' '
+                    };
+                    let slash = if c.kind == Kind::File { "" } else { "/" };
+                    let p = here.join(&*c.name);
+                    let mark = match self.mark(&p) {
+                        Some('*') => Span::raw("*").yellow().bold(),
+                        Some(m) => Span::raw(m.to_string()).yellow(),
+                        None => Span::raw(" "),
+                    };
+                    ListItem::new(Line::from(vec![
+                        self.del_mark(&p),
+                        mark,
+                        Span::raw(format!(
+                            "{:>10} {:>10} {:>10} {:>10} {:>8} [{:<10}] {:>5.1}% {flag}{}{slash}",
+                            human(c.private),
+                            human(c.alloc),
+                            date(c.modified),
+                            date(c.created),
+                            if c.kind == Kind::File { String::new() } else { count(c.files) },
+                            "#".repeat(filled),
+                            s as f64 * 100.0 / total as f64,
+                            c.name
+                        )),
+                    ]))
+                })
+                .collect();
+            let list = List::new(items).highlight_style(Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+            let mut state = self.list;
+            f.render_stateful_widget(list, body, &mut state);
+            self.list = state;
         }
 
         let dir = self.cur();
@@ -1446,10 +1467,7 @@ impl App {
             let h = text.lines().map(|l| l.chars().count().max(1).div_ceil(inner)).sum::<usize>() as u16 + 2;
             let area = centered(f.area(), w, h);
             f.render_widget(Clear, area);
-            f.render_widget(
-                Paragraph::new(text).wrap(Wrap { trim: false }).block(Block::bordered().title(" delete everything marked ").red()),
-                area,
-            );
+            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).block(Block::bordered().title(" delete everything marked ").red()), area);
         }
         if let Some(d) = &self.deleting {
             self.draw_deleting(f, d);
@@ -1602,16 +1620,17 @@ impl App {
                     }
                     let reason = self.suggestions.iter().find(|s| s.path == *p).map(|s| s.reason.as_str());
                     match reason {
-                        Some(r) if sugg || !r.is_empty() => {
-                            ListItem::new(vec![Line::from(line), Line::from(format!("              {}", if sugg { r.to_string() } else { format!("agent: {r}") })).dim()])
-                        }
+                        Some(r) if sugg || !r.is_empty() => ListItem::new(vec![
+                            Line::from(line),
+                            Line::from(format!("              {}", if sugg { r.to_string() } else { format!("agent: {r}") })).dim(),
+                        ]),
                         _ => ListItem::new(Line::from(line)),
                     }
                 })
                 .collect()
         };
         let list = List::new(rows).highlight_style(Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
-        let mut state = self.page_list.clone();
+        let mut state = self.page_list;
         f.render_stateful_widget(list, body, &mut state);
         self.page_list = state;
         let keys = if sugg {
@@ -1836,7 +1855,7 @@ fn print(root_path: &Path, one_fs: bool, use_cache: bool, n: usize, bytes: bool)
         human(total),
         built.trim()
     );
-    root.children.sort_by(|a, b| b.private.cmp(&a.private));
+    root.children.sort_by_key(|c| std::cmp::Reverse(c.private));
     println!("{:>10} {:>10} {:>10}  name", "private", "allocated", "modified");
     for c in root.children.iter().take(n) {
         let slash = if c.kind == Kind::File { "" } else { "/" };
@@ -2000,10 +2019,10 @@ fn marked_cli(delete: bool, yes: bool) -> i32 {
     }
     let left: Vec<&PathBuf> = marked.iter().filter(|p| p.symlink_metadata().is_ok()).collect();
     let gone: Vec<PathBuf> = marked.iter().filter(|p| p.symlink_metadata().is_err()).cloned().collect();
-    if let (Some(s), Some(d)) = (cache::suggestions_file(), cache::deleted_file()) {
-        if let Err(e) = cache::record_deleted(&s, &d, &gone, unix_now()) {
-            eprintln!("{BIN}: could not record deleted suggestions in {}: {e}", d.display());
-        }
+    if let (Some(s), Some(d)) = (cache::suggestions_file(), cache::deleted_file())
+        && let Err(e) = cache::record_deleted(&s, &d, &gone, unix_now())
+    {
+        eprintln!("{BIN}: could not record deleted suggestions in {}: {e}", d.display());
     }
     if let Err(e) = cache::save_paths(&file, Path::new("/"), left.iter().map(|p| (p.as_path(), ""))) {
         eprintln!("{BIN}: could not save marks to {}: {e}", file.display());

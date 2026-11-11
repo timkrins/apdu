@@ -195,4 +195,3 @@ mod tests {
         assert!(uuid(st.dev() as libc::dev_t).is_some());
     }
 }
-

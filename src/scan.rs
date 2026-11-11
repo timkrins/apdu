@@ -44,7 +44,14 @@ fn attr_list() -> AttrList {
     AttrList {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME | ATTR_CMN_FILEID,
+        commonattr: ATTR_CMN_RETURNED_ATTRS
+            | ATTR_CMN_ERROR
+            | ATTR_CMN_NAME
+            | ATTR_CMN_DEVID
+            | ATTR_CMN_OBJTYPE
+            | ATTR_CMN_CRTIME
+            | ATTR_CMN_MODTIME
+            | ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: 0,
         fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
@@ -227,7 +234,7 @@ fn scan_dir(name: Box<str>, path: PathBuf, times: (i64, i64), ctx: &Ctx) -> Node
         ctx.progress.errors.fetch_add(1, Relaxed);
         return node;
     };
-    if ctx.progress.dirs.fetch_add(1, Relaxed) % 256 == 0 {
+    if ctx.progress.dirs.fetch_add(1, Relaxed).is_multiple_of(256) {
         *ctx.progress.current.lock().unwrap() = path.to_string_lossy().into_owned();
     }
     let mut files = 0u64;

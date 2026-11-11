@@ -191,11 +191,7 @@ impl Parser<'_> {
                 while self.s.get(self.i).is_some_and(|c| matches!(c, b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')) {
                     self.i += 1;
                 }
-                std::str::from_utf8(&self.s[start..self.i])
-                    .ok()
-                    .and_then(|n| n.parse().ok())
-                    .map(Json::Num)
-                    .ok_or_else(|| format!("bad value at byte {start}"))
+                std::str::from_utf8(&self.s[start..self.i]).ok().and_then(|n| n.parse().ok()).map(Json::Num).ok_or_else(|| format!("bad value at byte {start}"))
             }
             None => Err("unexpected end of input".into()),
         }
@@ -367,12 +363,7 @@ mod tests {
 
     #[test]
     fn round_trips_objects() {
-        let v = obj([
-            ("cmd", "suggest".into()),
-            ("path", "/tmp/a \"b\"\\c\n".into()),
-            ("n", 42u64.into()),
-            ("list", Json::Arr(vec![Json::Null, true.into()])),
-        ]);
+        let v = obj([("cmd", "suggest".into()), ("path", "/tmp/a \"b\"\\c\n".into()), ("n", 42u64.into()), ("list", Json::Arr(vec![Json::Null, true.into()]))]);
         assert_eq!(parse(&v.to_string()).unwrap(), v);
     }
 

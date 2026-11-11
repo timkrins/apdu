@@ -17,9 +17,9 @@ use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::sync::mpsc::Sender;
 
 pub const DEFAULT_PORT: u16 = 7377;
 
@@ -117,7 +117,9 @@ impl Apdu {
         self.ask("suggest", vec![("path", self.abs(&a.path).into()), ("reason", a.reason.into())]).await
     }
 
-    #[tool(description = "List the current deletion suggestions, with their reasons and whether the user has marked each for deletion. `deleted` lists suggestions the user has since deleted in apdu, with when: they are gone, so don't suggest them again or treat them as still on disk.")]
+    #[tool(
+        description = "List the current deletion suggestions, with their reasons and whether the user has marked each for deletion. `deleted` lists suggestions the user has since deleted in apdu, with when: they are gone, so don't suggest them again or treat them as still on disk."
+    )]
     async fn suggestions(&self) -> Result<String, String> {
         self.ask("suggestions", vec![]).await
     }
@@ -247,13 +249,7 @@ pub fn start(lan: bool, port: u16, root: PathBuf, tx: Sender<Request>) -> std::i
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let host = if lan { hostname() } else { "127.0.0.1".into() };
-    let running = Running {
-        lan,
-        ip: if lan { lan_ip() } else { None },
-        host: host.clone(),
-        port,
-        pairing: Arc::new(Mutex::new(None)),
-    };
+    let running = Running { lan, ip: if lan { lan_ip() } else { None }, host: host.clone(), port, pairing: Arc::new(Mutex::new(None)) };
     let pairing = running.pairing.clone();
     let (fallback, script_token) = (format!("{host}:{port}"), token.clone());
     std::thread::spawn(move || {
@@ -269,7 +265,9 @@ pub fn start(lan: bool, port: u16, root: PathBuf, tx: Sender<Request>) -> std::i
             let apdu = Apdu { tx, root };
             let service = StreamableHttpService::new(move || Ok(apdu.clone()), Arc::new(LocalSessionManager::default()), config);
             let token: Arc<str> = token.into();
-            let pair = move |axum::extract::Path(code): axum::extract::Path<String>, axum::extract::ConnectInfo(from): axum::extract::ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap| async move {
+            let pair = move |axum::extract::Path(code): axum::extract::Path<String>,
+                             axum::extract::ConnectInfo(from): axum::extract::ConnectInfo<SocketAddr>,
+                             headers: axum::http::HeaderMap| async move {
                 let host = headers.get("host").and_then(|h| h.to_str().ok()).filter(|h| plain_authority(h)).unwrap_or(&fallback);
                 if redeem(&pairing, &code, &from.ip().to_string()) { Ok(setup_script(host, &script_token)) } else { Err(StatusCode::NOT_FOUND) }
             };
