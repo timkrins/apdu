@@ -6,9 +6,11 @@
 
 use crate::fsevents::Change;
 use crate::scan::{self, Kind, Node, Progress};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::Ordering::Relaxed;
 
 const MAGIC: &[u8; 8] = b"APDUC\0\0\x02";
 pub const COLLAPSE: [&str; 2] = [".git", "node_modules"];
@@ -217,11 +219,18 @@ fn locate<'a>(tree: &'a mut Node, root: &Path, path: &Path) -> Option<(&'a mut N
 /// Brings a loaded tree up to date with the folders FSEvents says changed.
 /// A changed folder is listed again; its subfolders keep their old totals
 /// unless they are new or were replaced (a different birth time), since any
-/// change inside one is reported as its own event.
+/// change inside one is reported as its own event. Its files keep their saved
+/// private size while their size and times match, since asking APFS for it
+/// is most of the cost of relisting a folder of many files.
 pub fn refresh(tree: &mut Node, root: &Path, mut changes: Vec<Change>, one_fs: bool, progress: &Progress) -> usize {
     let dev = scan::dev_of(root);
-    changes.sort_by_key(|c| c.path.components().count());
-    changes.dedup();
+    changes.sort_by(|a, b| a.path.components().count().cmp(&b.path.components().count()).then_with(|| a.path.cmp(&b.path)));
+    changes.dedup_by(|later, kept| {
+        later.path == kept.path && {
+            kept.recursive |= later.recursive;
+            true
+        }
+    });
     let mut fresh: Vec<PathBuf> = Vec::new();
     let mut done = 0;
     for c in changes {
@@ -240,10 +249,18 @@ pub fn refresh(tree: &mut Node, root: &Path, mut changes: Vec<Change>, one_fs: b
             continue;
         }
         let Some(listing) = scan::list(&at, dev, one_fs) else { continue };
-        let mut old: HashMap<Box<str>, Node> =
-            std::mem::take(&mut node.children).into_iter().filter(|c| c.kind != Kind::File).map(|c| (c.name.clone(), c)).collect();
+        progress.items.fetch_add(listing.len() as u64, Relaxed);
+        let mut old: HashMap<Box<str>, Node> = std::mem::take(&mut node.children).into_iter().map(|c| (c.name.clone(), c)).collect();
+        let mut to_size = Vec::new();
         for e in listing {
             let child = match (e.kind, old.remove(&e.name)) {
+                (Kind::File, Some(o)) if o.kind == Kind::File && (o.alloc, o.created, o.modified) == (e.alloc, e.created, e.modified) => {
+                    Node { private: o.private, ..e }
+                }
+                (Kind::File, _) if e.alloc > 0 => {
+                    to_size.push(node.children.len());
+                    e
+                }
                 (Kind::Dir, Some(o)) if matches!(o.kind, Kind::Dir | Kind::Duplicate) && o.created == e.created => o,
                 (Kind::Dir, _) => {
                     let p = at.join(&*e.name);
@@ -256,6 +273,10 @@ pub fn refresh(tree: &mut Node, root: &Path, mut changes: Vec<Change>, one_fs: b
                 _ => e,
             };
             node.children.push(child);
+        }
+        let sizes: Vec<Option<u64>> = to_size.par_iter().map(|&i| scan::private_size(&at.join(&*node.children[i].name))).collect();
+        for (i, size) in to_size.into_iter().zip(sizes) {
+            node.children[i].private = size.unwrap_or(node.children[i].alloc);
         }
         if let Ok(m) = std::fs::symlink_metadata(&at) {
             use std::os::unix::fs::MetadataExt;
@@ -457,5 +478,26 @@ mod tests {
         assert_eq!(n, 3, "new/ and new/inner come with relisting the root");
         std::fs::remove_dir_all(&d).unwrap();
         std::fs::remove_file(&file).unwrap();
+    }
+
+    #[test]
+    fn relisting_reuses_saved_private_sizes_and_counts_each_folder_once() {
+        let d = tmp("reuse");
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::write(d.join("a"), vec![1u8; 9000]).unwrap();
+        let mut tree = scan::scan(&d, true, &Progress::default());
+        tree.children.iter_mut().find(|c| &*c.name == "a").unwrap().private = 1234;
+        std::fs::write(d.join("b"), vec![1u8; 20_000]).unwrap();
+
+        let progress = Progress::default();
+        let changes = [d.clone(), d.join("sub"), d.clone()].into_iter().map(|path| Change { path, recursive: false }).collect();
+        let n = refresh(&mut tree, &d, changes, true, &progress);
+
+        assert_eq!(find(&tree, "a").private, 1234, "an unchanged file keeps the size the index saved");
+        assert_eq!(find(&tree, "b").private, find(&scan::scan(&d, true, &Progress::default()), "b").private);
+        assert!(find(&tree, "b").private > 0);
+        assert_eq!(n, 2, "a folder named twice is relisted once");
+        assert_eq!(progress.items.load(Relaxed), 3, "a, b and sub are counted as they are listed");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

@@ -40,7 +40,7 @@ unsafe extern "C" {
     fn getattrlist(path: *const libc::c_char, attrs: *mut AttrList, buf: *mut u8, size: usize, options: u32) -> i32;
 }
 
-fn attr_list() -> AttrList {
+fn attr_list(private: bool) -> AttrList {
     AttrList {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -55,7 +55,7 @@ fn attr_list() -> AttrList {
         volattr: 0,
         dirattr: 0,
         fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
-        forkattr: ATTR_CMNEXT_PRIVATESIZE,
+        forkattr: if private { ATTR_CMNEXT_PRIVATESIZE } else { 0 },
     }
 }
 
@@ -108,6 +108,7 @@ pub struct Progress {
 struct Ctx<'a> {
     dev: i32,
     one_fs: bool,
+    private: bool,
     seen: Mutex<HashSet<u64>>,
     dirs: Mutex<HashSet<(i32, u64)>>,
     progress: &'a Progress,
@@ -140,7 +141,7 @@ fn read_entries(dir: &Path, ctx: &Ctx) -> Option<Vec<Entry>> {
     let mut out = Vec::new();
     let mut ok = true;
     BUF.with_borrow_mut(|buf| {
-        let mut attrs = attr_list();
+        let mut attrs = attr_list(ctx.private);
         loop {
             let n = unsafe { getattrlistbulk(fd, &mut attrs, buf.as_mut_ptr(), buf.len(), FSOPT_NOFOLLOW | FSOPT_ATTR_CMN_EXTENDED) };
             if n <= 0 {
@@ -284,7 +285,7 @@ fn lstat(path: &Path) -> Option<libc::stat> {
 
 fn single_file(path: &Path) -> Node {
     let name: Box<str> = path.to_string_lossy().into();
-    let mut attrs = attr_list();
+    let mut attrs = attr_list(true);
     attrs.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME;
     attrs.fileattr = ATTR_FILE_ALLOCSIZE;
     let mut buf = [0u8; 96];
@@ -313,16 +314,18 @@ pub fn scan_on(root: &Path, dev: i32, one_fs: bool, progress: &Progress) -> Node
     }
     let st = lstat(root);
     let dirs = st.map(|s| HashSet::from([(s.st_dev, s.st_ino)])).unwrap_or_default();
-    let ctx = Ctx { dev, one_fs, seen: Mutex::new(HashSet::new()), dirs: Mutex::new(dirs), progress };
+    let ctx = Ctx { dev, one_fs, private: true, seen: Mutex::new(HashSet::new()), dirs: Mutex::new(dirs), progress };
     let times = st.map_or((0, 0), |s| (s.st_birthtime, s.st_mtime));
     scan_dir(root.to_string_lossy().into(), root.to_path_buf(), times, &ctx)
 }
 
-/// One folder's direct entries: files sized, subfolders as empty Dir nodes
-/// carrying only their own times. None if the folder can't be read.
+/// One folder's direct entries: files with their allocated size, subfolders as
+/// empty Dir nodes carrying only their own times. A file's private size is left
+/// equal to its allocated size, since asking APFS for it costs far more than the
+/// listing; `private_size` fetches it. None if the folder can't be read.
 pub fn list(dir: &Path, dev: i32, one_fs: bool) -> Option<Vec<Node>> {
     let progress = Progress::default();
-    let ctx = Ctx { dev, one_fs, seen: Mutex::new(HashSet::new()), dirs: Mutex::new(HashSet::new()), progress: &progress };
+    let ctx = Ctx { dev, one_fs, private: false, seen: Mutex::new(HashSet::new()), dirs: Mutex::new(HashSet::new()), progress: &progress };
     let entries = read_entries(dir, &ctx)?;
     Some(
         entries
@@ -337,6 +340,12 @@ pub fn list(dir: &Path, dev: i32, one_fs: bool) -> Option<Vec<Node>> {
             })
             .collect(),
     )
+}
+
+/// The bytes only this file holds, not shared with a clone; None if unreadable.
+pub fn private_size(path: &Path) -> Option<u64> {
+    let n = single_file(path);
+    (!n.error).then_some(n.private)
 }
 
 pub fn dev_of(path: &Path) -> i32 {
