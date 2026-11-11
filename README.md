@@ -16,51 +16,26 @@ If `cargo` isn't on your `PATH`, install Rust with [rustup](https://rustup.rs).
 
 ## Install
 
-Every route puts the binary at `~/.local/bin/apdu`, so make sure `~/.local/bin` is on your `PATH`. Leave out `--root ~/.local` to install into `~/.cargo/bin` instead.
-
-### Without a clone
-
 ```sh
-cargo install --git https://github.com/timkrins/apdu --root ~/.local
+cargo install --git https://github.com/timkrins/apdu
 ```
 
-### From a clone
-
-```sh
-git clone https://github.com/timkrins/apdu.git
-cd apdu
-cargo install --path . --root ~/.local
-```
+This builds apdu and puts it in `~/.cargo/bin`, which rustup adds to your `PATH`, so `apdu` runs from any folder. Check with `apdu --help`.
 
 ## Update
 
-Use the same route and `--root` you installed with.
-
-No clone:
+Run the same command again:
 
 ```sh
-cargo install --git https://github.com/timkrins/apdu --root ~/.local
+cargo install --git https://github.com/timkrins/apdu
 ```
 
 Cargo rebuilds when there's a new commit on `main`, and says "already installed" when there isn't. To reinstall anyway, add `--force`.
 
-From a clone:
-
-```sh
-git pull
-cargo install --path . --root ~/.local
-```
-
-Installs from before the Cargo package was renamed from `space` to `apdu` need a one-time cleanup first. Otherwise cargo refuses to overwrite a binary that belongs to another package:
-
-```sh
-cargo uninstall --root ~/.local space
-```
-
 ## Uninstall
 
 ```sh
-cargo uninstall --root ~/.local apdu
+cargo uninstall apdu
 rm -rf ~/Library/Caches/apdu
 ```
 
