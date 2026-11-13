@@ -274,6 +274,9 @@ fn scan_dir(name: Box<str>, path: PathBuf, times: (i64, i64), ctx: &Ctx) -> Node
         node.files += c.files;
         node.modified = node.modified.max(c.modified);
     }
+    if crate::cache::COLLAPSE.contains(&&*node.name) {
+        node.children = Vec::new();
+    }
     node
 }
 
@@ -308,6 +311,8 @@ pub fn scan(root: &Path, one_fs: bool, progress: &Progress) -> Node {
 
 /// Scans `root`, treating `dev` as the filesystem to stay on: a folder inside an
 /// earlier scan is rescanned against that scan's filesystem, not its own.
+/// Folders under `root` named in COLLAPSE keep only their totals, as in the
+/// saved scan: they hold most of the files and are rarely looked inside.
 pub fn scan_on(root: &Path, dev: i32, one_fs: bool, progress: &Progress) -> Node {
     if !root.is_dir() || root.is_symlink() {
         return single_file(root);
@@ -383,6 +388,30 @@ mod tests {
         let file = scan(&root.join("old.txt"), true, &Progress::default());
         assert_eq!(file.modified, 1_000_000_000);
         assert_eq!(file.created, 1_000_000_000, "an mtime before the birth time pulls it back");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn git_and_node_modules_keep_only_their_totals() {
+        let root = std::env::temp_dir().join(format!("apdu-collapse-test-{}", std::process::id()));
+        for d in ["node_modules/pkg", ".git/objects", "src"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for i in 0..50 {
+            std::fs::write(root.join(format!("node_modules/pkg/{i}.js")), "x").unwrap();
+            std::fs::write(root.join(format!(".git/objects/{i}")), "x").unwrap();
+        }
+        std::fs::write(root.join("src/main.rs"), "x").unwrap();
+        fn nodes(n: &Node) -> usize {
+            1 + n.children.iter().map(nodes).sum::<usize>()
+        }
+
+        let node = scan(&root, true, &Progress::default());
+        assert_eq!(nodes(&node), 5, "the root, node_modules, .git, src and src/main.rs");
+        assert_eq!(node.items, 107);
+        let inside = scan(&root.join("node_modules"), true, &Progress::default());
+        assert_eq!(inside.children[0].children.len(), 50, "scanning one opens it");
+        assert!(std::mem::size_of::<Node>() <= 96, "one Node per file: keep it small");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

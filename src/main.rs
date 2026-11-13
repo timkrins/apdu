@@ -1827,7 +1827,11 @@ fn run(terminal: &mut DefaultTerminal, root_path: PathBuf, opts: Opts) -> std::i
         dirty = true;
         let was_map = app.map;
         match event::read()? {
-            Event::Key(k) if k.kind == KeyEventKind::Press && !app.key(k.code) => return Ok(()),
+            Event::Key(k) if k.kind == KeyEventKind::Press && !app.key(k.code) => {
+                // Freeing millions of nodes one by one is most of the time it takes to quit.
+                std::mem::forget(app);
+                return Ok(());
+            }
             Event::Mouse(m) if app.map => app.mouse(m),
             _ => {}
         }
