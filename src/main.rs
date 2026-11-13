@@ -103,7 +103,8 @@ d                delete selected item now (asks first)
 x                mark or unmark it for deletion later (red x;
                  + a folder holding some)    M list marked
 D                delete everything marked (asks first)
-r                rescan this directory
+Esc              while deleting: stop, keeping what is left
+r               rescan this directory
 ] [              next / previous agent suggestion (* marks one,
                  + a folder holding some)
 S                suggestions page: x marks for deletion, - dismisses
@@ -196,8 +197,19 @@ struct Deleting {
     items: u64,
     bytes: u64,
     done: Arc<DeleteProgress>,
-    worker: std::thread::JoinHandle<Vec<Result<(), String>>>,
+    worker: std::thread::JoinHandle<Vec<Outcome>>,
     then: After,
+}
+
+/// How far a delete got with one target.
+enum Outcome {
+    Gone,
+    /// Still on disk: stopped with Esc, or failed with `error`. `touched` if
+    /// some of it was deleted, so the tree no longer matches it.
+    Kept {
+        touched: bool,
+        error: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -205,6 +217,7 @@ struct DeleteProgress {
     items: std::sync::atomic::AtomicU64,
     bytes: std::sync::atomic::AtomicU64,
     folder: Mutex<PathBuf>,
+    stop: std::sync::atomic::AtomicBool,
 }
 
 /// A rescan of one folder running on another thread.
@@ -266,9 +279,13 @@ fn glob(pattern: &str, name: &str) -> bool {
 }
 
 /// Deletes `p` and everything in it, without following symlinks, counting
-/// what it has deleted in `progress`.
+/// what it has deleted in `progress`. Stops with Interrupted once
+/// `progress.stop` is set.
 fn delete_tree(p: &Path, progress: &DeleteProgress) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
+    if progress.stop.load(Relaxed) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
     let m = p.symlink_metadata()?;
     if m.is_dir() {
         *progress.folder.lock().unwrap() = p.to_path_buf();
@@ -424,9 +441,15 @@ impl App {
         let worker = std::thread::spawn(move || {
             paths
                 .iter()
-                .map(|p| match delete_tree(p, &progress) {
-                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not delete {}: {e}", p.display())),
-                    _ => Ok(()),
+                .map(|p| {
+                    let before = progress.items.load(Relaxed);
+                    match delete_tree(p, &progress) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Outcome::Kept {
+                            touched: progress.items.load(Relaxed) > before,
+                            error: (e.kind() != std::io::ErrorKind::Interrupted).then(|| format!("could not delete {}: {e}", p.display())),
+                        },
+                        _ => Outcome::Gone,
+                    }
                 })
                 .collect()
         });
@@ -442,22 +465,36 @@ impl App {
         }
         let d = self.deleting.take().unwrap();
         let n = d.targets.len();
-        let results = d.worker.join().unwrap_or_else(|_| vec![Err("the delete crashed".into()); n]);
-        let (mut freed, mut alloc, mut deleted, mut failed) = (0, 0, 0, Vec::new());
-        for (p, r) in d.targets.iter().zip(results) {
-            match r.and_then(|_| self.forget(p)) {
-                Ok(n) => {
-                    freed += n.private;
-                    alloc += n.alloc;
-                    deleted += 1;
+        let crashed = || Outcome::Kept { touched: true, error: Some("the delete crashed".into()) };
+        let outcomes = d.worker.join().unwrap_or_else(|_| (0..n).map(|_| crashed()).collect());
+        let (mut freed, mut alloc, mut deleted, mut failed, mut stopped) = (0, 0, 0, Vec::new(), false);
+        for (p, o) in d.targets.iter().zip(outcomes) {
+            match o {
+                Outcome::Gone => match self.forget(p) {
+                    Ok(n) => {
+                        freed += n.private;
+                        alloc += n.alloc;
+                        deleted += 1;
+                    }
+                    Err(e) => failed.push(e),
+                },
+                Outcome::Kept { touched, error } => {
+                    if touched {
+                        freed += self.rescan_target(p);
+                    }
+                    match error {
+                        Some(e) => failed.push(e),
+                        None => stopped = true,
+                    }
                 }
-                Err(e) => failed.push(e),
             }
         }
         match d.then {
             After::One(i) => {
                 self.message = Some(match failed.first() {
-                    Some(e) => format!(" {e}; r rescans"),
+                    Some(e) => format!(" {e}"),
+                    None if stopped && d.done.items.load(Relaxed) == 0 => " stopped before anything was deleted".into(),
+                    None if stopped => format!(" stopped: {} is partly deleted (freed about {})", self.short(&d.targets[0]), human(freed)),
                     None if alloc > freed => {
                         format!("deleted {} (freed about {}); its clones elsewhere may now be private, r rescans", d.targets[0].display(), human(freed))
                     }
@@ -469,7 +506,16 @@ impl App {
             After::Marked { here, sel, page, refused } => {
                 failed.splice(0..0, refused);
                 self.show_after_delete(&here, sel, page);
-                let mut msg = format!(" deleted {deleted} marked item{} (freed about {})", if deleted == 1 { "" } else { "s" }, human(freed));
+                let of = if stopped { format!(" of {n}") } else { String::new() };
+                let mut msg = format!(
+                    " deleted {deleted}{of} marked item{} (freed about {})",
+                    if (if stopped { n } else { deleted }) == 1 { "" } else { "s" },
+                    human(freed)
+                );
+                if stopped {
+                    msg.insert_str(0, " stopped:");
+                    msg.push_str("; the rest are still marked");
+                }
                 if let Some(e) = failed.first() {
                     msg.push_str(&format!("; {} failed, still marked: {e}", failed.len()));
                 }
@@ -477,6 +523,15 @@ impl App {
             }
         }
         true
+    }
+
+    /// Rescans a target the delete got partway through, so the tree matches
+    /// what is left of it. Returns the private bytes it freed.
+    fn rescan_target(&mut self, p: &Path) -> u64 {
+        let Ok(at) = self.locate(p) else { return 0 };
+        let before = self.find(p).map_or(0, |n| n.private);
+        self.rescan_at(&at);
+        before.saturating_sub(self.find(p).map_or(0, |n| n.private))
     }
 
     /// Where `target` is in the tree, if apdu may delete it.
@@ -1082,8 +1137,12 @@ impl App {
 
     fn key(&mut self, code: KeyCode) -> bool {
         self.message = None;
-        if self.deleting.is_some() {
-            self.message = Some(" still deleting: keys work again once it is done".into());
+        if let Some(d) = &self.deleting {
+            if code == KeyCode::Esc {
+                d.done.stop.store(true, Relaxed);
+            } else {
+                self.message = Some(" still deleting: keys work again once it is done (Esc stops it)".into());
+            }
             return true;
         }
         if self.refreshing.is_some() {
@@ -1518,6 +1577,7 @@ impl App {
             Line::from(format!(" Deleting {what}")),
             Line::from(format!(" {items} of {} items, {} of {}", d.items, human(bytes), human(d.bytes))),
             Line::from(format!(" in {}", self.short(&folder))).dim(),
+            Line::from(if d.done.stop.load(Relaxed) { " stopping…" } else { " Esc stops, leaving the rest as it is" }).dim(),
         ];
         let area = centered(f.area(), f.area().width.saturating_sub(8).min(80), 7);
         let block = Block::bordered().title(" deleting ").red();
@@ -2510,6 +2570,41 @@ mod tests {
         term.draw(|f| app.draw(f)).unwrap();
         let screen: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
         assert!(!screen.contains("Deleting big"), "the box closes when it is done");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn esc_stops_a_delete_and_the_tree_matches_what_is_left() {
+        let d = std::env::temp_dir().canonicalize().unwrap().join(format!("apdu-stop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for s in 0..4 {
+            std::fs::create_dir_all(d.join(format!("big/{s}"))).unwrap();
+            for i in 0..1000 {
+                std::fs::write(d.join(format!("big/{s}/{i}")), vec![1u8; 5_000]).unwrap();
+            }
+        }
+        std::fs::write(d.join("keep"), b"k").unwrap();
+        let mut app = app();
+        (app.root, app.root_path) = (scan::scan(&d, true, &Progress::default()), d.clone());
+        app.sort_cur();
+        app.goto(&d.join("big")).unwrap();
+        let total = app.find(&d.join("big")).unwrap().items;
+
+        app.key(KeyCode::Char('d'));
+        app.key(KeyCode::Char('y'));
+        let progress = app.deleting.as_ref().unwrap().done.clone();
+        app.key(KeyCode::Esc);
+        let started = Instant::now();
+        settle(&mut app);
+        assert!(started.elapsed() < Duration::from_secs(2), "the delete stops promptly");
+
+        assert!(progress.items.load(Relaxed) < total, "it stopped before the end");
+        assert!(d.join("big").exists() && d.join("keep").exists());
+        assert!(app.message.as_deref().unwrap().contains("stopped"), "{:?}", app.message);
+        let truth = scan::scan(&d, true, &Progress::default());
+        assert_eq!((app.root.alloc, app.root.private, app.root.items, app.root.files), (truth.alloc, truth.private, truth.items, truth.files));
+        let big = app.find(&d.join("big")).unwrap();
+        assert_eq!(big.items, truth.children.iter().find(|c| &*c.name == "big").unwrap().items, "the partly deleted folder is rescanned");
         std::fs::remove_dir_all(&d).unwrap();
     }
 
